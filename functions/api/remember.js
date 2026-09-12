@@ -70,6 +70,27 @@ function claimKey(text) {
   return s || null;
 }
 
+// Fuzzy same-category similarity for restatements the LLM normalized slightly
+// differently ("I like mint tea" vs "likes mint tea"). After dropping pronouns
+// and articles, two facts are "the same claim" if they share >= 60% of the
+// shorter token set. Never used for location — "lives in Paris" vs "lives in
+// Berlin" must stay a contradiction, not a merge.
+function similarClaims(a, b) {
+  if (a === b) return true;
+  const normalize = (s) =>
+    String(s || '')
+      .toLowerCase()
+      .replace(/^(i|i'm|i am|my|me|we|our)\s+/, ' ')
+      .replace(/\b(i'm|i am|i|my|me|we|our|the|a|an|and|to|of)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const ta = new Set(normalize(a).split(' ').filter(Boolean));
+  const tb = new Set(normalize(b).split(' ').filter(Boolean));
+  if (ta.size === 0 || tb.size === 0) return false;
+  const overlap = [...ta].filter((w) => tb.has(w)).length;
+  return overlap / Math.min(ta.size, tb.size) >= 0.6;
+}
+
 export const onRequestOptions = () => handleOptions();
 
 export async function onRequestPost(context) {
@@ -116,7 +137,9 @@ export async function onRequestPost(context) {
   let skipRelationLoop = false;
   const newKey = claimKey(factText);
   if (newKey) {
-    const duplicate = (existing || []).find((m) => claimKey(m.fact_text) === newKey);
+    const duplicate = (existing || []).find(
+      (m) => claimKey(m.fact_text) === newKey || (category !== 'location' && similarClaims(factText, m.fact_text))
+    );
     if (duplicate && duplicate.status === 'contested') {
       const partner = (existing || []).find(
         (m) =>
