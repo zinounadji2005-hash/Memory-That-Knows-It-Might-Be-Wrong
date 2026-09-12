@@ -4,7 +4,64 @@
 import { getSupabase, logEvent } from '../lib/supabase.js';
 import { extractFact, classifyRelation } from '../lib/gemini.js';
 import { bumpedBase, CONTRADICTION_PENALTY, CONFIRM_BOOST } from '../lib/confidence.js';
+import { keywordCategory } from '../lib/categories.js';
 import { json, handleOptions, readJson } from '../lib/http.js';
+
+// Deterministic cleanup of a fresh claim before conflict checking.
+// The LLM alone is not reliable enough for a live demo: it has misclassified
+// "I moved to Berlin" as category "other" with the raw text echoed back, which
+// silently skipped contradiction detection. These rules fix the clear cases.
+function normalizeClaim(fact, rawInput) {
+  let text = String(fact.fact_text || rawInput).trim();
+  const llmCategory = fact.category || 'other';
+  const kw = keywordCategory(rawInput);
+
+  // LLM said "other" but the input clearly signals a known category.
+  const category = llmCategory !== 'other' ? llmCategory : kw || 'other';
+
+  if (category === 'location') {
+    // "I moved to Berlin" -> "lives in Berlin"  (relocations are a location fact)
+    text = text.replace(/^i\s+/i, '').trim();
+    text = text.replace(/^(?:lives?|live|am living|living)\s+in\s+/i, 'lives in ');
+    text = text.replace(/^moved?\s+to\s+/i, 'lives in ');
+    text = text.replace(/^move\s+to\s+/i, 'lives in ');
+  } else if (category === 'preference') {
+    text = text.replace(/^i\s+prefer\s+/i, 'prefers ');
+  } else if (category === 'diet') {
+    text = text.replace(/^i'?m\s+/i, 'is ');
+  }
+
+  return { fact_text: text, category };
+}
+
+// Deterministic statement confidence. The model's self-assigned number is too
+// unreliable for a live demo (it has returned 55 for crystal-clear statements).
+// Confidence = how clearly and directly the user stated the fact. Direct,
+// first-person claims score high; hedged or vague ones score low.
+const HEDGE_WORDS = /(\bmaybe\b|\bprobably\b|\bnot sure\b|\bi think\b|\bkind of\b|\bsort of\b|\bsometimes\b|\bi guess\b|\bpretty sure\b|\bfairly sure\b|\bpossibly\b|\bmight be\b)/i;
+
+function statementConfidence(input) {
+  const s = String(input || '');
+  if (HEDGE_WORDS.test(s)) return 55;
+  if (/^(i|my|me|we|our)\b/i.test(s.trim())) return 90;
+  return 80; // third-person or statement-like phrasing, still clearly asserted
+}
+
+// Deterministic contradiction backstop for the demo's centerpiece moment:
+// two location facts referring to different places are always a conflict,
+// even if the LLM classifies them as "unrelated".
+function trailingPlace(factText) {
+  const m = String(factText || '').match(/\bin\s+(.+)$/i);
+  return m ? m[1].trim().toLowerCase() : null;
+}
+
+function deterministicLocationConflict(newText, newCategory, existingText, existingCategory) {
+  if (newCategory !== 'location' || existingCategory !== 'location') return false;
+  const a = trailingPlace(newText);
+  const b = trailingPlace(existingText);
+  if (!a || !b) return false;
+  return a !== b;
+}
 
 export const onRequestOptions = () => handleOptions();
 
@@ -28,9 +85,8 @@ export async function onRequestPost(context) {
     });
   }
 
-  const factText = fact.fact_text.trim();
-  const category = fact.category || 'other';
-  const base = Math.max(0, Math.min(100, Number(fact.confidence) || 55));
+  const { fact_text: factText, category } = normalizeClaim(fact, input);
+  const base = statementConfidence(input);
 
   // -- Step 3: existing same-category memories -----------------------
   const { data: existing, error: qErr } = await client
@@ -51,7 +107,11 @@ export async function onRequestPost(context) {
   for (const mem of existing || []) {
     if (!mem.fact_text) continue;
     const res = await classifyRelation(env, factText, category, mem.fact_text);
-    const relation = res?.relation || 'unrelated';
+    let relation = res?.relation || 'unrelated';
+    if (relation !== 'contradict' &&
+        deterministicLocationConflict(factText, category, mem.fact_text, mem.category)) {
+      relation = 'contradict';
+    }
     if (relation === 'contradict' && !contradictedId) {
       contradictedId = mem.id;
       contradictionReason = res?.reason || `Conflicts with an existing "${category}" memory`;

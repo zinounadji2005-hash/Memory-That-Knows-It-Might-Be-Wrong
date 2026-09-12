@@ -12,28 +12,7 @@ import {
   daysSince,
 } from '../lib/confidence.js';
 import { json, handleOptions, readJson } from '../lib/http.js';
-
-// Deterministic local router — a stronger signal than the LLM route. The demo
-// must never miss the "I might be wrong" moment because the language model
-// failed to detect that "where do I live?" is about location.
-const ROUTE_KEYWORDS = {
-  location: ['live', 'living', 'locate', 'located', 'move', 'moved', 'city', 'hometown', 'home', 'address', 'where do i'],
-  diet: ['eat', 'eating', 'food', 'meals', 'vegetarian', 'vegan', 'diet', 'restaurant', 'cooking'],
-  contact: ['email', 'phone', 'number', 'call', 'contact', 'reach'],
-  preference: ['prefer', 'preference', 'like', 'favorite', 'favourite', 'seat', 'window', 'love', 'enjoy'],
-};
-
-function keywordRoute(question) {
-  const q = question.toLowerCase();
-  for (const [category, words] of Object.entries(ROUTE_KEYWORDS)) {
-    // Word-boundary matching, never substring — `eat` must not match `seat`
-    // and `prefer` must not match `preference`.
-    if (words.some((w) => new RegExp(`\\b${w}\\b`).test(q))) {
-      return { scope: 'user:default', category, keywords: words.filter((w) => new RegExp(`\\b${w}\\b`).test(q)) };
-    }
-  }
-  return { scope: 'user:default', category: null, keywords: [] };
-}
+import { keywordRoute } from '../lib/categories.js';
 
 function routeFor(question, llmRoute) {
   const kw = keywordRoute(question);

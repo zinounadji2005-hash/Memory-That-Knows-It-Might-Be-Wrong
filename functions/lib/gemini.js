@@ -67,12 +67,18 @@ export async function structuredCompletion(env, { systemPrompt, userText, fallba
 const FACT_EXTRACT_SYSTEM = `You extract ONE factual claim from free-text user input and return it as strict JSON.
 
 Rules:
-- Normalize the claim into a terse, third-person statement (e.g. "lives in Paris", "is vegetarian").
-- Do not invent facts not stated. If the input is a question or contains no claim, return fact_text: "". 
-- confidence (0-100): how clearly and explicitly the user stated this. Direct statements about the user's own life are high (80-95). Hedgey or vague statements are lower (50-70).
+- Normalize the claim into a terse, third-person statement. Examples:
+  "I live in Paris" -> "lives in Paris"
+  "I'm vegetarian" -> "is vegetarian"
+  "I prefer window seats when I fly" -> "prefers window seats when flying"
+- Relocations: "I moved to Berlin" MUST become fact_text "lives in Berlin" (never "moved to Berlin").
+- Do not invent facts not stated. If the input is a question or contains no claim, return fact_text: "".
+- confidence (0-100): how clearly and explicitly the user stated this. Direct statements about the user's own life are high (85-95). Hedgey or vague statements are lower (50-70).
 - category is one of: "location", "preference", "diet", "contact", "other".
+- A statement about where the user lives, moved, stays, or their home city is ALWAYS category "location" — never "other".
+- A statement about food, eating, or dietary habits is ALWAYS category "diet" — never "other".
 
-Respond ONLY as JSON, no markdown, no prose:
+Respond ONLY as strict JSON, no markdown, no prose:
 {"fact_text": string, "category": string, "confidence": number, "is_claim": boolean}`;
 
 export async function extractFact(env, rawInput, fallback) {
