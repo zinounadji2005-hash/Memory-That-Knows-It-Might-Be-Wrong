@@ -1,0 +1,59 @@
+{
+  "intent": "A few realistic scripted inputs to seed a demo persona for 'Memory That Knows It Might Be Wrong'. Feed them via the 'Tell it something' tab — in order — to replay the 90-second demo.",
+  "demo": [
+    {
+      "step": 1,
+      "action": "state",
+      "input": "I live in Paris",
+      "expect": "active memory, category location, high confidence, write event logged"
+    },
+    {
+      "step": 1,
+      "action": "state",
+      "input": "I prefer window seats when I fly",
+      "expect": "active memory, category preference, write event logged"
+    },
+    {
+      "step": 1,
+      "action": "state",
+      "input": "I'm vegetarian",
+      "expect": "active memory, category diet, write event logged"
+    },
+    {
+      "step": 2,
+      "action": "ask",
+      "input": "Where do I live?",
+      "expect": "confident answer citing source 'user_stated' + last confirmed date, recall event logged"
+    },
+    {
+      "step": 3,
+      "action": "state",
+      "input": "I moved to Berlin",
+      "expect": "contradiction flagged: 'lives in Paris' and 'lives in Berlin' both marked contested, contradict events logged"
+    },
+    {
+      "step": 4,
+      "action": "ask",
+      "input": "Where do I live?",
+      "expect": "THE 'I might be wrong' moment — app surfaces both memories and asks which is correct, it does not guess"
+    },
+    {
+      "step": 5,
+      "action": "resolve",
+      "input": "Keep: Berlin",
+      "expect": "Berlin restored to active with boosted confidence; Paris revoked and its content wiped; resolve + revoke events logged"
+    },
+    {
+      "step": 6,
+      "action": "forget",
+      "input": "forget my diet preference",
+      "expect": "vegetarian memory revoked, content wiped from memories.fact_text; memory_events shows event_type 'revoke' with category-only detail — no content retained"
+    },
+    {
+      "step": 6,
+      "action": "ask",
+      "input": "What do you remember about me?",
+      "expect": "inspector shows the remaining active memories; the revoked ones are gone (only the audit trail remains, without content)"
+    }
+  ]
+}
