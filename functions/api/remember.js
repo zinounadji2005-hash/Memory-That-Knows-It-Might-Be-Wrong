@@ -63,6 +63,13 @@ function deterministicLocationConflict(newText, newCategory, existingText, exist
   return a !== b;
 }
 
+// Canonical key for comparing claims: "Lives  in Paris" and "lives in paris"
+// are the same fact. Used by the identical-claim merge on the write path.
+function claimKey(text) {
+  const s = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return s || null;
+}
+
 export const onRequestOptions = () => handleOptions();
 
 export async function onRequestPost(context) {
@@ -99,26 +106,92 @@ export async function onRequestPost(context) {
     .limit(50);
   if (qErr) return json({ ok: false, error: 'DB query failed', detail: qErr.message }, 500);
 
-  // -- Step 4: relation check (confirm / contradict / unrelated) -----
+  // -- Step 3b: identical-claim merge (deterministic) ------------------
+  // Restating the same fact must NEVER create a duplicate row.
+  //   - active  -> corroborate: confidence +10, corroboration++, mark fresh
+  //   - contested -> the user just re-asserted one side: resolve toward it.
+  //                 This side becomes active + boosted; its conflict partner is
+  //                 revoked with content wiped (same privacy rule as forget.js).
   let confirmedId = null;
+  let skipRelationLoop = false;
+  const newKey = claimKey(factText);
+  if (newKey) {
+    const duplicate = (existing || []).find((m) => claimKey(m.fact_text) === newKey);
+    if (duplicate && duplicate.status === 'contested') {
+      const partner = (existing || []).find(
+        (m) =>
+          m.id !== duplicate.id &&
+          m.status === 'contested' &&
+          (m.contradicted_by === duplicate.id || duplicate.contradicted_by === m.id)
+      );
+      const newBase = bumpedBase(duplicate.base_confidence ?? 50, CONFIRM_BOOST);
+      await client
+        .from('memories')
+        .update({
+          status: 'active',
+          contradicted_by: null,
+          base_confidence: newBase,
+          confidence: newBase,
+          corroboration_count: (duplicate.corroboration_count ?? 1) + 1,
+          last_confirmed_at: new Date().toISOString(),
+        })
+        .eq('id', duplicate.id);
+      if (partner) {
+        await client
+          .from('memories')
+          .update({
+            status: 'revoked',
+            fact_text: null,
+            base_confidence: 0,
+            confidence: 0,
+            contradicted_by: null,
+            category: null,
+          })
+          .eq('id', partner.id);
+        await client.from('memories').update({ contradicted_by: null }).eq('contradicted_by', partner.id);
+        await logEvent(client, partner.id, 'revoke',
+          `Rejected in favour of a re-asserted memory: user revoked a '${partner.category}' memory. Content intentionally not retained.`);
+      }
+      await logEvent(client, duplicate.id, 'resolve',
+        `Conflict resolved: user re-asserted this "${duplicate.category}" memory; the conflicting one was revoked.`);
+      return json({
+        ok: true,
+        outcome: 'reaffirm',
+        message: partner
+          ? `Got it — you reaffirmed "${duplicate.fact_text}", so I trust it and have let go of the conflicting version.`
+          : `Got it — reaffirmed "${duplicate.fact_text}", marked fresh.`,
+        memory_id: duplicate.id,
+        base_confidence: newBase,
+        revoked_id: partner?.id ?? null,
+      });
+    }
+    if (duplicate) {
+      confirmedId = duplicate.id;
+      skipRelationLoop = true;
+    }
+  }
+
+  // -- Step 4: relation check (confirm / contradict / unrelated) -----
   let contradictedId = null;
   let contradictionReason = null;
 
-  for (const mem of existing || []) {
-    if (!mem.fact_text) continue;
-    const res = await classifyRelation(env, factText, category, mem.fact_text);
-    let relation = res?.relation || 'unrelated';
-    if (relation !== 'contradict' &&
-        deterministicLocationConflict(factText, category, mem.fact_text, mem.category)) {
-      relation = 'contradict';
-    }
-    if (relation === 'contradict' && !contradictedId) {
-      contradictedId = mem.id;
-      contradictionReason = res?.reason || `Conflicts with an existing "${category}" memory`;
-      break;
-    }
-    if (relation === 'confirm' && !confirmedId) {
-      confirmedId = mem.id;
+  if (!skipRelationLoop) {
+    for (const mem of existing || []) {
+      if (!mem.fact_text) continue;
+      const res = await classifyRelation(env, factText, category, mem.fact_text);
+      let relation = res?.relation || 'unrelated';
+      if (relation !== 'contradict' &&
+          deterministicLocationConflict(factText, category, mem.fact_text, mem.category)) {
+        relation = 'contradict';
+      }
+      if (relation === 'contradict' && !contradictedId) {
+        contradictedId = mem.id;
+        contradictionReason = res?.reason || `Conflicts with an existing "${category}" memory`;
+        break;
+      }
+      if (relation === 'confirm' && !confirmedId) {
+        confirmedId = mem.id;
+      }
     }
   }
 
@@ -150,7 +223,13 @@ export async function onRequestPost(context) {
 
     const newId = inserted.id;
 
-    const oldPenalized = bumpedBase(old?.base_confidence ?? 50, -CONTRADICTION_PENALTY);
+    // Already-contested memories do not get re-penalized: the -30 was applied
+    // once when they first entered the dispute, so confidence can never stack
+    // down to zero from repeated contradictory statements.
+    const oldPenalized =
+      old?.status === 'contested'
+        ? (old?.base_confidence ?? 50)
+        : bumpedBase(old?.base_confidence ?? 50, -CONTRADICTION_PENALTY);
     const { error: uErr } = await client
       .from('memories')
       .update({

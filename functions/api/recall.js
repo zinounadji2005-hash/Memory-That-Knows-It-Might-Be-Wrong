@@ -21,6 +21,25 @@ function routeFor(question, llmRoute) {
   return kw;
 }
 
+function normKey(text) {
+  return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// Retrieval-time de-duplication. The write path may hold several rows for the
+// same underlying fact (identical category + normalized text). Citations must
+// never show the same fact twice with different confidence numbers, so collapse
+// duplicates here and keep the strongest representative (highest effective
+// confidence = the same value the main confidence meter shows).
+function dedupeForDisplay(withEff) {
+  const byFact = new Map();
+  for (const m of withEff) {
+    const key = `${m.category}::${normKey(m.fact_text)}`;
+    const current = byFact.get(key);
+    if (!current || current.effective < m.effective) byFact.set(key, m);
+  }
+  return [...byFact.values()];
+}
+
 export const onRequestOptions = () => handleOptions();
 
 export async function onRequestPost(context) {
@@ -74,13 +93,18 @@ export async function onRequestPost(context) {
     days_since_confirm: Math.round(daysSince(m.last_confirmed_at) * 10) / 10,
   }));
 
-  const staleOnes = withEff.filter((m) => isStaleCandidate(m, m.effective));
+  // Contested memories are never demoted to 'stale' by time decay: a fact under
+  // active dispute must stay visible until the user resolves it (a freshly
+  // contested pair should not quietly age into "too old to matter").
+  const staleOnes = withEff.filter(
+    (m) => m.status !== 'contested' && isStaleCandidate(m, m.effective)
+  );
   for (const s of staleOnes) {
     await client.from('memories').update({ status: 'stale' }).eq('id', s.id);
     await logEvent(client, s.id, 'decay', `Effective confidence fell below ${STALE_FLOOR}; marked stale and excluded from future confident answers.`);
   }
 
-  const ranked = withEff
+  const ranked = dedupeForDisplay(withEff)
     .filter((m) => m.status !== 'stale')
     .sort((a, b) => b.effective - a.effective);
 
