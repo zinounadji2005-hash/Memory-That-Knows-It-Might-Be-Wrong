@@ -43,10 +43,11 @@ This is deliberately **not** plain vector RAG. There is no embedding index and n
 │        │             │               │                │                   │
 │  ┌─────▼─────────────▼───────────────▼────────────────▼──────┐            │
 │  │ functions/lib/                                            │            │
-│  │   gemini.js      — structured JSON extraction + relation  │            │
-│  │   confidence.js  — decay math + thresholds                │            │
-│  │   supabase.js    — server-side client                     │            │
-│  │   http.js        — CORS / JSON helpers                    │            │
+  │  │   gemini.js      — structured JSON extraction + relation  │            │
+  │  │   confidence.js  — decay math + thresholds                │            │
+  │  │   categories.js  — deterministic keyword routing          │            │
+  │  │   supabase.js    — server-side client                     │            │
+  │  │   http.js        — CORS / JSON helpers                    │            │
 │  └──────────────────────────────┬────────────────────────────┘            │
 └─────────────────────────────────┼────────────────────────────────────────┘
                                   ▼
@@ -193,7 +194,7 @@ Do exactly this, in order, in front of a judge — each bold step lands on its o
 
 ```
 functions/
-  lib/  supabase.js · gemini.js · confidence.js · http.js
+  lib/  categories.js · confidence.js · gemini.js · http.js · supabase.js
   api/  remember.js · recall.js · forget.js · resolve-conflict.js · inspector.js
 src/
   api.js
